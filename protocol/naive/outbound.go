@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/sagernet/cronet-go"
 	_ "github.com/sagernet/cronet-go/all"
@@ -35,10 +36,11 @@ func RegisterOutbound(registry *outbound.Registry) {
 
 type Outbound struct {
 	outbound.Adapter
-	ctx       context.Context
-	logger    logger.ContextLogger
-	client    *cronet.NaiveClient
-	uotClient *uot.Client
+	ctx              context.Context
+	logger           logger.ContextLogger
+	client           *cronet.NaiveClient
+	uotClient        *uot.Client
+	connectionWarmup bool
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.NaiveOutboundOptions) (adapter.Outbound, error) {
@@ -211,11 +213,12 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		networks = []string{N.NetworkTCP}
 	}
 	return &Outbound{
-		Adapter:   outbound.NewAdapterWithDialerOptions(C.TypeNaive, tag, networks, options.DialerOptions),
-		ctx:       ctx,
-		logger:    logger,
-		client:    client,
-		uotClient: uotClient,
+		Adapter:          outbound.NewAdapterWithDialerOptions(C.TypeNaive, tag, networks, options.DialerOptions),
+		ctx:              ctx,
+		logger:           logger,
+		client:           client,
+		uotClient:        uotClient,
+		connectionWarmup: options.ConnectionWarmup,
 	}, nil
 }
 
@@ -228,7 +231,40 @@ func (h *Outbound) Start(stage adapter.StartStage) error {
 		return err
 	}
 	h.logger.Info("NaiveProxy started, version: ", h.client.Engine().Version())
+
+	// Connection warmup: pre-establish connection to reduce first request latency
+	if h.connectionWarmup {
+		go h.warmupConnection()
+	}
+
 	return nil
+}
+
+// warmupConnection pre-establishes a connection to the proxy server
+// to reduce the cold-start latency for the first real request
+func (h *Outbound) warmupConnection() {
+	// Use a background context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Try to establish a connection to a well-known reliable endpoint
+	// This will trigger the HTTP/2 connection setup to the proxy server
+	warmupDest := M.ParseSocksaddr("www.google.com:443")
+
+	h.logger.Debug("warming up connection to proxy server...")
+
+	conn, err := h.client.DialEarly(ctx, warmupDest)
+	if err != nil {
+		// Warmup failure is not critical, just log it
+		h.logger.Debug("connection warmup failed: ", err)
+		return
+	}
+
+	// Close the connection immediately after a short delay
+	// We only needed to establish the HTTP/2 connection to the proxy
+	time.Sleep(100 * time.Millisecond)
+	conn.Close()
+	h.logger.Info("connection warmup completed successfully")
 }
 
 func (h *Outbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {

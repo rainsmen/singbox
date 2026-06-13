@@ -36,5 +36,7 @@ type NaiveOutboundOptions struct {
 	QUIC                     bool                     `json:"quic,omitempty"`
 	QUICCongestionControl    string                   `json:"quic_congestion_control,omitempty"`
 	QUICSessionReceiveWindow *byteformats.MemoryBytes `json:"quic_session_receive_window,omitempty"`
+	// Connection warmup to reduce cold-start latency
+	ConnectionWarmup         bool                     `json:"connection_warmup,omitempty"`
 	OutboundTLSOptionsContainer
 }
